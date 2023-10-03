@@ -1,0 +1,315 @@
+/*SELECT TOP (1000) [ Player Name]
+      ,[ Position]
+      ,[ Team Abbreviation]
+      ,[ Age]
+      ,[ Games Played]
+      ,[ Wins]
+      ,[ Losses]
+      ,[ Minutes Played]
+      ,[ Total Points]
+      ,[ Field Goals Made]
+      ,[ Field Goals Attempted]
+      ,[ Field Goal Percentage]
+      ,[ Three Point FG Made]
+      ,[ Three Point FG Attempted]
+      ,[ Three Point FG Percentage]
+      ,[ Free Throws Made]
+      ,[ Free Throws Attempted]
+      ,[ Free Throw Percentage]
+      ,[ Offensive Rebounds]
+      ,[ Defensive Rebounds]
+      ,[ Total Rebounds]
+      ,[ Assists]
+      ,[ Turnovers]
+      ,[ Steals]
+      ,[ Blocks]
+      ,[ Personal Fouls]
+      ,[ NBA Fantasy Points]
+      ,[ Double Doubles]
+      ,[ Triple Doubles]
+      ,[ Plus Minus]
+  FROM [NBA 2023 Stats].[dbo].[NBA_player_stats_2023]*/
+
+
+  /**********************************************************************************
+  *		Questions to Answer: 														*
+  *	Players True Shooting %														    *			
+  *	Most Effective Position True Shooting %										    *
+  *	Total Amount of Threes shot per Team (Most effective player/team)			    *
+  *	Defensive Rebound % per Player                	  					            *
+  *	Steals % per Player		     										            *
+  *	Blocks % per Player		     										            *
+  *	Tot Amount of Twos/Layups/Dunks per players/Team (Most effective player/team)   *
+  *	Most prolific 3 and Defence Player 											    *
+  *																				    *
+  **********************************************************************************/
+
+
+
+USE [NBA 2023 Stats]
+
+SELECT *
+FROM NBA_player_stats_2023
+;
+
+--Dataset integrity (How much we need to clean) -- Looking at the columns requirement, there are no Null values but there are Zero/NA values 
+SELECT *
+FROM NBA_player_stats_2023
+WHERE [ Total Points] IS NULL
+;
+
+--N/A values will be dropped (5 rows - Players that did not play any game but registered to fill the 15th role )
+DELETE 
+FROM NBA_player_stats_2023
+WHERE [ Position] = 'N/A'
+;
+
+--Breakdown of team min 
+--This temp table is to get the players role and to get the actual Mins per team (some teams played overtime)  
+DROP TABLE IF EXISTS #Player_roles
+CREATE TABLE #Player_roles (
+	[ Team Abbreviation] varchar(255),
+	[ Player Name] varchar(255),
+	[ Position] varchar(255),
+	[ Total Points] int,
+	[ Minutes Played] float, 
+	[ Games Played] float,
+	Player_Roles int)
+
+INSERT INTO #Player_roles
+SELECT [ Team Abbreviation],[ Player Name], [ Position], [ Total Points], [ Minutes Played], [ Games Played], RANK() OVER (
+PARTITION BY [ Team Abbreviation] ORDER BY [ Total Points] DESC, [ Minutes Played] DESC) Player_Roles 	 
+--Top 5 players per team are likely starters or 6th Man in the team based off their mins  
+FROM NBA_player_stats_2023
+GROUP BY [ Team Abbreviation], [ Player Name], [ Position], [ Total Points], [ Minutes Played], [ Games Played] 
+;
+
+SELECT DISTINCT([ Team Abbreviation]), [ Player Name], [ Games Played], MAX(Player_Roles), [ Position] 
+FROM #Player_roles
+GROUP BY [ Team Abbreviation], [ Player Name], [ Position], [ Games Played]
+ORDER BY [ Team Abbreviation], [ Games Played] DESC
+;
+
+
+--Standard duration per game is 48min and there are a total of 82 games, this leads to a total of 3936 mins per team excluding overtime.
+--This can not be measured using NBA player matrix due to the nature of player trade and Minuate restrictions. 
+SELECT DISTINCT NBA_player_stats_2023.[ Team Abbreviation], SUM(NBA_player_stats_2023.[ Minutes Played]/4) AS Team_Min
+FROM NBA_player_stats_2023
+JOIN #Player_roles
+	ON NBA_player_stats_2023.[ Player Name] = #Player_roles.[ Player Name]
+GROUP BY NBA_player_stats_2023.[ Team Abbreviation]
+ORDER BY Team_Min DESC
+;
+
+
+--Players True Shooting %  
+DROP TABLE IF EXISTS #True_shooting
+CREATE TABLE #True_shooting (
+	[ Team Abbreviation] varchar(255),
+	[ Player Name] varchar(255),
+	[ Position] varchar(255), 
+	[ Age] int, 
+	[ Games Played] float,
+	True_Shooting_Perc float)
+
+INSERT INTO #True_shooting
+--There are Zero values based on Total points scored and Field Goal Attempted
+SELECT  [ Team Abbreviation], [ Player Name], [ Position], [ Age], [ Games Played],
+ROUND((NULLIF(([ Total Points]),0)/NULLIF((2 * ([ Field Goals Attempted] + (0.44 * [ Free Throws Attempted]))),0))*100,2) True_shooting_Perc
+FROM NBA_player_stats_2023
+--We are also concerns with players that are more likely to play than seat on the bench
+;
+
+
+--True Shooting % by Position
+SELECT [ Position], ROUND(AVG(True_shooting_Perc),2)
+FROM #True_shooting
+WHERE [ Games Played] >= 10
+GROUP BY [ Position]
+;
+
+
+SELECT [ Player Name], ROUND(AVG(True_shooting_Perc),2) TS_perc, True_Shooting_Perc, [ Games Played] 
+FROM #True_shooting
+WHERE [ Position] = 'SF/PF' AND [ Games Played] >= 10
+GROUP BY [ Player Name], True_Shooting_Perc, [ Games Played]
+ORDER BY TS_perc DESC
+;
+
+--Player positions like G and F are ambigious but are not actual known positons so they will be changed to G - PG/SG and F - SF/PF
+UPDATE #True_shooting
+SET [ Position] = 'PG/SG'
+WHERE [ Position] = 'G'
+;
+
+UPDATE #True_shooting
+SET [ Position] = 'SF/PF'
+WHERE [ Position] = 'F'
+;
+
+--Total Amount of Threes shot per Team % 
+SELECT DISTINCT [ Team Abbreviation],ROUND(AVG([ Three Point FG Percentage]),2) TEAM_PERC
+FROM NBA_player_stats_2023
+--WHERE [ Position] = 'N/A
+GROUP BY [ Team Abbreviation]
+ORDER BY TEAM_PERC DESC
+;
+
+--Team Stats % 
+DROP TABLE IF EXISTS #Team_Stats
+CREATE TABLE #Team_Stats (
+	[ Team Abbreviation] varchar(255),
+	Team_Wins int,
+	[2PT_MADE] int,
+	TEAM_FG_PERC float, 
+	TEAM_3_PERC float, 
+	Team_FT_Perc float,
+	Team_DefReb int,
+	Team_OffReb int,
+	Team_TO int,
+	Team_Stl int,
+	Team_Blk int,
+    Team_PF int,
+	Team_TS float)
+
+INSERT INTO #Team_Stats
+SELECT NBA2023.[ Team Abbreviation], MAX(NBA2023.[ Wins]) Team_Wins, SUM(NBA2023.[ Total Points]-((NBA2023.[ Three Point FG Made]*3)+ NBA2023.[ Free Throws Made])) [2PT_MADE], 
+ROUND(AVG(NBA2023.[ Field Goal Percentage]),2) TEAM_FG_PERC, ROUND(AVG(NBA2023.[ Three Point FG Percentage]),2) TEAM_3_PERC, 
+ROUND(AVG(NBA2023.[ Free Throw Percentage]),2) Team_FT_Perc, SUM(NBA2023.[ Defensive Rebounds]) Team_DefReb,SUM(NBA2023.[ offensive Rebounds]) Team_OffReb,
+SUM(NBA2023.[ Turnovers]) Team_TO, SUM(NBA2023.[ Steals]) Team_Stl, SUM(NBA2023.[ Blocks]) Team_Blk, SUM(NBA2023.[ Personal Fouls]) Team_PF, 
+ROUND(AVG(TS.True_shooting_Perc),2) Team_TS
+FROM NBA_player_stats_2023 NBA2023
+JOIN #True_shooting TS
+	ON NBA2023.[ Player Name] = TS.[ Player Name]
+GROUP BY NBA2023.[ Team Abbreviation]
+;
+
+--Tot Amount of Twos/Layups/Dunks per players/Team (Most effective player/team)
+-- Per Player
+SELECT [ Team Abbreviation], SUM([ Total Points]), SUM(([ Total Points]-(([ Three Point FG Made]*3)+[ Free Throws Made])))   
+FROM NBA_player_stats_2023
+GROUP BY [ Team Abbreviation]
+;
+
+
+SELECT [ Team Abbreviation], Team_OffReb
+FROM #Team_Stats
+ORDER BY Team_OffReb DESC
+;
+
+SELECT AVG(Team_OffReb)
+FROM #Team_Stats
+;
+
+
+--Defensive Rebound % -- calculation for DFR requires OFR per match, However we have total sum for the entire season, we will be using the average nr of offensive rebound '855'.
+SELECT NBA23.[ Player Name], NBA23.[ Games Played],ROUND(100*((NBA23.[ Defensive Rebounds] * (3936/5))/(NBA23.[ Minutes Played]*(TS.Team_DefReb + 855))),2) Def_Reb_Perc, NBA23.[ Position]
+FROM NBA_player_stats_2023 NBA23
+JOIN #Team_Stats TS
+	ON NBA23.[ Team Abbreviation] = TS.[ Team Abbreviation]
+GROUP BY NBA23.[ Player Name],NBA23.[ Games Played],NBA23.[ Defensive Rebounds],NBA23.[ Minutes Played],TS.Team_DefReb, NBA23.[ Position]
+ORDER BY Def_Reb_Perc DESC
+;
+
+--Steal % 
+SELECT NBA23.[ Player Name], NBA23.[ Games Played],ROUND(100*((NBA23.[ Steals] * (3936/5))/(NBA23.[ Minutes Played]*(TS.Team_Stl + 855))),2) Steal_Perc, NBA23.[ Position]
+FROM NBA_player_stats_2023 NBA23
+JOIN #Team_Stats TS
+	ON NBA23.[ Team Abbreviation] = TS.[ Team Abbreviation]
+GROUP BY NBA23.[ Player Name],NBA23.[ Games Played],NBA23.[ Steals],NBA23.[ Minutes Played],TS.Team_Stl, NBA23.[ Position]
+ORDER BY Steal_Perc DESC
+;
+
+--Block %
+SELECT NBA23.[ Player Name], NBA23.[ Games Played], ROUND(100*((NBA23.[ Blocks] * (3936/5))/(NBA23.[ Minutes Played]*(TS.Team_Blk + 855))),2) Block_Perc, NBA23.[ Position]
+FROM NBA_player_stats_2023 NBA23
+JOIN #Team_Stats TS
+	ON NBA23.[ Team Abbreviation] = TS.[ Team Abbreviation]
+GROUP BY NBA23.[ Player Name],NBA23.[ Games Played],NBA23.[ Blocks],NBA23.[ Minutes Played],TS.Team_Blk, NBA23.[ Position]
+ORDER BY Block_Perc DESC, NBA23.[ Games Played] DESC
+;
+
+
+--Most prolific 3 and Defence Player
+/* NOTE: The defensive contribution requires other stats but a cummulation of def rebs, steals and blocks are the major factors and were used to derive Defensive contribution.
+Furthermore, we don't consider the top 3 starters in a team as 3 and D as this title is for majorly 4th position till the end of the bench. 
+Known 3 and D players are used to check the accuracy of the query.*/
+
+SELECT NBA2023.[ Player Name], NBA2023.[ Position], NBA2023.[ Three Point FG Made], NBA2023.[ Three Point FG Percentage], 
+TruSht.True_Shooting_Perc, ROUND(((NBA2023.[ Defensive Rebounds]+ NBA2023.[ Blocks] + NBA2023.[ Steals])/(TS.Team_DefReb + TS.Team_Blk + Team_Stl)),2) defcont, 
+ROUND((NBA2023.[ Assists]/82),2) Astmtch
+FROM NBA_player_stats_2023 NBA2023
+JOIN #Team_Stats TS
+	ON NBA2023.[ Team Abbreviation] = TS.[ Team Abbreviation]
+JOIN #True_shooting TruSht
+	ON NBA2023.[ Player Name] = TruSht.[ Player Name]
+JOIN #Player_roles PlayS
+	ON NBA2023.[ Player Name] = PlayS.[ Player Name]
+WHERE True_Shooting_Perc > 40 AND NBA2023.[ Three Point FG Percentage] > 34 AND PlayS.Player_Roles >= 4 AND NBA2023.[ Three Point FG Made] > 50 AND NBA2023.[ Position] <> 'C'
+--AND NBA2023.[ Player Name] = 'Grant Williams'
+--AND NBA2023.[ Player Name] = 'Marcus Morris'
+GROUP BY NBA2023.[ Player Name], NBA2023.[ Position], NBA2023.[ Three Point FG Made], NBA2023.[ Three Point FG Percentage], 
+TruSht.True_Shooting_Perc,NBA2023.[ Defensive Rebounds], NBA2023.[ Blocks], NBA2023.[ Steals], TS.Team_DefReb, TS.Team_Blk, Team_Stl,NBA2023.[ Assists]
+HAVING ROUND((NBA2023.[ Assists]/82),2) <= 3.5 
+ORDER BY defcont DESC, NBA2023.[ Three Point FG Made] DESC
+;
+
+
+--Making a view to move the visuals to Tablaue...creating a stored procedure for each of the temp file 
+CREATE VIEW TeamStats AS 
+WITH CTE_True_shooting AS
+	(SELECT  [ Team Abbreviation], [ Player Name], [ Position], [ Age], [ Games Played],
+	ROUND((NULLIF(([ Total Points]),0)/NULLIF((2 * ([ Field Goals Attempted] + (0.44 * [ Free Throws Attempted]))),0))*100,2) True_shooting_Perc
+	FROM NBA_player_stats_2023)	
+SELECT NBA2023.[ Team Abbreviation], MAX(NBA2023.[ Wins]) Team_Wins, SUM(NBA2023.[ Total Points]-((NBA2023.[ Three Point FG Made]*3)+ NBA2023.[ Free Throws Made])) [2PT_MADE], 
+ROUND(AVG(NBA2023.[ Field Goal Percentage]),2) TEAM_FG_PERC, ROUND(AVG(NBA2023.[ Three Point FG Percentage]),2) TEAM_3_PERC, 
+ROUND(AVG(NBA2023.[ Free Throw Percentage]),2) Team_FT_Perc, SUM(NBA2023.[ Defensive Rebounds]) Team_DefReb,SUM(NBA2023.[ offensive Rebounds]) Team_OffReb,
+SUM(NBA2023.[ Turnovers]) Team_TO, SUM(NBA2023.[ Steals]) Team_Stl, SUM(NBA2023.[ Blocks]) Team_Blk, SUM(NBA2023.[ Personal Fouls]) Team_PF, 
+ROUND(AVG(TS.True_shooting_Perc),2) Team_TS
+FROM NBA_player_stats_2023 NBA2023
+JOIN CTE_True_shooting TS
+	ON NBA2023.[ Player Name] = TS.[ Player Name]
+GROUP BY NBA2023.[ Team Abbreviation]
+;
+
+
+CREATE VIEW Three_and_D_Player AS 
+WITH CTE_True_shooting AS
+	(SELECT  [ Team Abbreviation], [ Player Name], [ Position], [ Age], [ Games Played],
+	ROUND((NULLIF(([ Total Points]),0)/NULLIF((2 * ([ Field Goals Attempted] + (0.44 * [ Free Throws Attempted]))),0))*100,2) True_shooting_Perc
+	FROM NBA_player_stats_2023),
+CTE_Team_Stats AS 
+	(SELECT NBA2023.[ Team Abbreviation], MAX(NBA2023.[ Wins]) Team_Wins, SUM(NBA2023.[ Total Points]-((NBA2023.[ Three Point FG Made]*3)+ NBA2023.[ Free Throws Made])) [2PT_MADE], 
+	ROUND(AVG(NBA2023.[ Field Goal Percentage]),2) TEAM_FG_PERC, ROUND(AVG(NBA2023.[ Three Point FG Percentage]),2) TEAM_3_PERC, 
+	ROUND(AVG(NBA2023.[ Free Throw Percentage]),2) Team_FT_Perc, SUM(NBA2023.[ Defensive Rebounds]) Team_DefReb,SUM(NBA2023.[ offensive Rebounds]) Team_OffReb,
+	SUM(NBA2023.[ Turnovers]) Team_TO, SUM(NBA2023.[ Steals]) Team_Stl, SUM(NBA2023.[ Blocks]) Team_Blk, SUM(NBA2023.[ Personal Fouls]) Team_PF, 
+	ROUND(AVG(TS.True_shooting_Perc),2) Team_TS
+	FROM NBA_player_stats_2023 NBA2023
+	JOIN CTE_True_shooting TS
+		ON NBA2023.[ Player Name] = TS.[ Player Name]
+	GROUP BY NBA2023.[ Team Abbreviation]),
+CTE_Player_Roles AS 
+	(SELECT [ Team Abbreviation],[ Player Name], [ Position], [ Total Points], [ Minutes Played], [ Games Played], RANK() OVER (
+	PARTITION BY [ Team Abbreviation] ORDER BY [ Total Points] DESC, [ Minutes Played] DESC) Player_Roles 	 
+	FROM NBA_player_stats_2023
+	GROUP BY [ Team Abbreviation], [ Player Name], [ Position], [ Total Points], [ Minutes Played], [ Games Played])
+SELECT NBA2023.[ Player Name], NBA2023.[ Position], NBA2023.[ Three Point FG Made], NBA2023.[ Three Point FG Percentage], 
+TruSht.True_Shooting_Perc, ROUND(((NBA2023.[ Defensive Rebounds]+ NBA2023.[ Blocks] + NBA2023.[ Steals])/(TS.Team_DefReb + TS.Team_Blk + Team_Stl)),2) defcont, 
+ROUND((NBA2023.[ Assists]/82),2) Astmtch
+FROM NBA_player_stats_2023 NBA2023
+JOIN CTE_Team_Stats TS
+	ON NBA2023.[ Team Abbreviation] = TS.[ Team Abbreviation]
+JOIN CTE_True_shooting TruSht
+	ON NBA2023.[ Player Name] = TruSht.[ Player Name]
+JOIN CTE_Player_Roles PlayS
+	ON NBA2023.[ Player Name] = PlayS.[ Player Name]
+WHERE True_Shooting_Perc > 40 AND NBA2023.[ Three Point FG Percentage] > 34 AND PlayS.Player_Roles >= 4 AND NBA2023.[ Three Point FG Made] > 50 AND NBA2023.[ Position] <> 'C'
+GROUP BY NBA2023.[ Player Name], NBA2023.[ Position], NBA2023.[ Three Point FG Made], NBA2023.[ Three Point FG Percentage], 
+TruSht.True_Shooting_Perc,NBA2023.[ Defensive Rebounds], NBA2023.[ Blocks], NBA2023.[ Steals], TS.Team_DefReb, TS.Team_Blk, Team_Stl,NBA2023.[ Assists]
+HAVING ROUND((NBA2023.[ Assists]/82),2) <= 3.5 
+;
+
+CREATE VIEW True_Shooting AS 
+	(SELECT  [ Team Abbreviation], [ Player Name], [ Position], [ Age], [ Games Played],
+	ROUND((NULLIF(([ Total Points]),0)/NULLIF((2 * ([ Field Goals Attempted] + (0.44 * [ Free Throws Attempted]))),0))*100,2) True_shooting_Perc
+	FROM NBA_player_stats_2023)	
