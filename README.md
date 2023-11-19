@@ -1,2 +1,3 @@
 # NBA-Data-Analysis-
-This is demonstration of the extent of my SQL expertise
+Using SQL to rank players roles and usage as well as Team stats based off individual stats 
+
